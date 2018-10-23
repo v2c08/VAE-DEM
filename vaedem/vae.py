@@ -1,3 +1,4 @@
+import os 
 import keras
 import numpy as np
 from keras import backend as K
@@ -10,12 +11,9 @@ from keras import metrics
 from keras.optimizers import Adam
 from keras import objectives
 from keras.utils import plot_model
-from dataset import Dataset
-import gym
-from sampler import Sampler
-from dataset import Dataset
 from datetime import datetime
-
+from gen_data import get_data
+from keras.layers.merge import concatenate
 
 # todo implement fit_generator()
 # todo wrapper for fit/train
@@ -53,7 +51,6 @@ class KLLayer(Layer):
 	"""
 	def __init__(self, *args, **kwargs):
 		self.is_placeholder = True
-		self.target = Input(shape=(P['nT'], P['obs_dim']))
 		self.use_reconstruction_loss = P['use_rec_loss']
 		super(KLLayer, self).__init__(*args, **kwargs)
 
@@ -91,30 +88,32 @@ def roll(x):
 
 
 """ Environment & Parameters """
+# Data Locations
+WEIGHTS_DIR  = os.path.join(os.getcwd(),'weights')
+RESULTS_DIR  = os.path.join(os.getcwd(),'results_pedestrian')
+DATA_DIR     = os.path.join(os.getcwd(),'data\\')
 
-#sampler = Sampler(env_name, n_envs, envs=None)
-env_name = 'MountainCarContinuous-v0'
+t_files = sorted(os.listdir(DATA_DIR))
+nT = 41
+batch_size = 1
+ 
+image_data, camxloc, camyloc, objxrot, objyrot = get_data(1, nT, 'train', DATA_DIR, (128,160), 3)
 
+print(next(image_data))
+print(next(image_data)[0].shape)
+print(camxloc.shape)
+print(objxrot.shape)
 
-env = gym.make(env_name)
-lambda_env = lambda : gym.make(env_name) #todo
-
-obs_dim = len(env.observation_space.sample())
-action_dim = len(env.observation_space.sample())
-
-nT = 20
-batch_size = 50
-
-
-dataset = Dataset(n_envs=1, n_batches=batch_size, nT=nT, obs_dim=obs_dim, action_dim=action_dim, data_path=None)
-obs_data, action_data, combined_data = dataset.generate(env)
-shifted_obsdata = roll(obs_data)
+image_dim = np.prod((128,160,3))
+cam_dim   = (3)
+obj_dim   = (2)
 
 
 P = {
     'nT': nT,
-    'obs_dim': obs_dim,
-	'action_dim':action_dim,
+    'image_dim': image_dim,
+    'cam_dim': cam_dim,
+    'obj_dim': obj_dim,
     'batch_size': batch_size,
     'latent_dim': 8,
     'epochs': 100,
@@ -126,7 +125,6 @@ P = {
 	'policy_obs_units': 64,
 	'policy_action_units': 4,
     'feature_rep_size': 100,
-
 	'use_rec_loss':False,
 	'verbose': True
 }
@@ -138,22 +136,30 @@ K.set_learning_phase(1) #set learning phase
 # #  State Encoder - qφ(z | τ ) # #
 
 def encoder():
-	inputs = Input(shape=(P['nT'],P['obs_dim']), name='encoder_inputs')
+    
+    image_inputs = Input(shape=(P['nT'],P['image_dim']), name='image_inputs')
+    cam_inputs   = Input(shape=(P['nT'],P['cam_dim']), name='cam_inputs')
+    obj_inputs   = Input(shape=(P['nT'],P['obj_dim']), name='obj_inputs')
+    
+    # merge pixel representation and constraints
+    inputs = concatenate([image_inputs, cam_inputs, obj_inputs])
+    
+    # Use informtion from the past & future
+    h = Bidirectional(LSTM(P['encoder_hidden_units'],return_sequences=True))(inputs)
 
-
-	# Use informtion from the past & future
-	h = Bidirectional(LSTM(P['encoder_hidden_units'],return_sequences=True))(inputs)
-	# Mean pooling on temporal axis (compression)
-	h = GlobalAveragePooling1D()(h)
-	#h = MaxPooling1D(pool_length=P['nT'], name='max_pool')(h)
-
-	# mean net output
-	z_mean = Dense(P['latent_dim'], name='zmean')(h)
-	z_log_sigma = Dense(P['latent_dim'], name='zlogsigma')(h)
-	z_mean, z_log_sigma = KLLayer()([z_mean, z_log_sigma])
-	z = Lambda(sampling, name='z')([z_mean, z_log_sigma])
-	return inputs, z_mean, z_log_sigma, z
-
+    # Mean pooling on temporal axis (compression)
+    h = GlobalAveragePooling1D()(h)
+    
+    # mean net output
+    z_mean = Dense(P['latent_dim'], name='zmean')(h)
+    z_log_sigma = Dense(P['latent_dim'], name='zlogsigma')(h)
+    z_mean, z_log_sigma = KLLayer()([z_mean, z_log_sigma])
+    z = Lambda(sampling, output_shape=(P['latent_dim'],), name='z')([z_mean, z_log_sigma])
+    
+    z = concatenate([RepeatVector(P['nT'])(z), cam_inputs, obj_inputs])    
+    
+    return image_inputs, cam_inputs, obj_inputs, z_mean, z_log_sigma, z
+    
 def sampling(args):
 	"""
 	lambda function for sampling latents
@@ -163,40 +169,45 @@ def sampling(args):
 	"""
 	z_mean, z_log_sigma = args
 	epsilon = K.random_normal(shape=(P['batch_size'],P['latent_dim']), mean=0., stddev=1)
-	return z_mean + z_log_sigma * epsilon
+	return z_mean + K.exp(z_log_sigma/2) * epsilon
 
 
-inputs, z_mean, z_log_sigma, z = encoder()
-encoder = Model(inputs, z, name='encoder')
+image_inputs, cam_inputs, obj_inputs, z_mean, z_log_sigma, z = encoder()
+
+encoder = Model([image_inputs, cam_inputs, obj_inputs], z, name='encoder')
+
+
 encoder.summary()
 plot_model(encoder, to_file='encoder.png', show_shapes=True)
 
 # #  State Decoder - pθ(τ |z )  # #
 
 def decoder():
-
-	latent_inputs = Input(shape=(P['latent_dim'],), name='z_samples')
-	z = RepeatVector(P['nT'])(latent_inputs)
-	h = Dense(P['decoder_dense_units'], activation='relu')(z)
-	h_zmean  = Dense(P['obs_dim'])(h)
-	h_zsigma = Dense(P['obs_dim'])(h)
-	s_hat = LSTM(P['obs_dim'], return_sequences=True, activation='linear')(h, [h_zmean, h_zsigma])
-
-	return latent_inputs, s_hat
-
-
+    
+    
+    out_dim = P['image_dim']+P['cam_dim']+P['obj_dim']
+    print(out_dim)
+    image_out = Dense(P['image_dim'], activation='sigmoid')
+    cam_out = Dense(P['cam_dim'], activation='sigmoid')
+    obj_out = Dense(P['obj_dim'], activation='sigmoid')
+    
+    latent_inputs = Input(shape=(P['latent_dim'],), name='z_samples')
+    z = RepeatVector(P['nT'])(latent_inputs)
+    decoder_h = LSTM(P['latent_dim'], return_sequences=True)(z)
+    s_hat = LSTM(32, return_sequences=True, activation='linear')(decoder_h)
+    return latent_inputs, s_hat
+    
+    
 latent_inputs, s_hat = decoder()
 decoder = Model(latent_inputs, s_hat, name='state_decoder')
 decoder.summary()
 plot_model(decoder, to_file='decoder.png', show_shapes=True)
 
 # VAE
-kl_layer = KLLayer(name='loss_layer')
-y = kl_layer([inputs, decoder(encoder(inputs))]) # real & deconstructed inputs respectively
-vae = Model([inputs, kl_layer.target], y)
-vae.compile(optimizer=P['optimizer'],loss=None) # We have implemented loss in KLLayer
-vae.summary()
-plot_model(vae, to_file='vae.png', show_shapes=True)
+# define cvae and encoder models
+cvae = Model([image_inputs, cam_inputs, obj_inputs], decoder(z))
+encoder = Model([image_inputs, cam_inputs, obj_inputs], z)
+
 
 vae.fit([obs_data, shifted_obsdata],
         shuffle=True,

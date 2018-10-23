@@ -79,6 +79,9 @@ z_log_sigma = Dense(P['latent_dim'], name='zlogsigma')(h)
 z_mean, z_log_sigma = KLLayer()([z_mean, z_log_sigma])
 z = Lambda(sampling, name='z')([z_mean, z_log_sigma])
 
+z_cond = concatenate([z, cam_inputs, obj_inputs])
+
+
 def sampling(args):
 	"""
 	lambda function for sampling latents
@@ -88,7 +91,7 @@ def sampling(args):
 	"""
 	z_mean, z_log_sigma = args
 	epsilon = K.random_normal(shape=(P['batch_size'],P['latent_dim']), mean=0., stddev=1)
-	return z_mean + z_log_sigma * epsilon
+	return z_mean + K.exp(z_log_sigma/2) * epsilon
 
 encoder = Model(inputs, z, name='encoder')
 encoder.summary()
