@@ -1,0 +1,30 @@
+# World Parameters
+shapes  : !!python/list ['Cube', 'Cone', 'Cylinder', 'Icosphere', 'Torus']
+colours : !!python/list ['r', 'g', 'b', 'w']
+n_classes : 9
+
+# Experiment Parameters
+save_model : True
+batch_size    : 60
+nT            : 60
+train_batches : 49
+val_batches   : 3
+test_batches  : 5
+
+# Image Parameters
+im_width    : 64
+im_height   : 64
+n_channels  : 3
+image_shape : !!python/tuple [64,64,3]
+
+# Convolution Parameters
+kernel_size  : 3
+num_conv     : 3
+filters      : 64
+latent_dim   : 8
+embedding dim    : 9
+intermediate_dim : 256
+
+# Network Parameters
+epsilon_std      : 1.0
+epochs           : 1

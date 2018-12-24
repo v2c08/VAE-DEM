@@ -1,0 +1,13 @@
+Use npy instead of json
+
+Enforce import order
+
+Support persistence in MATLAB
+
+Modify ELBO
+
+Clean up
+
+Tests:
+
+MLB label verification

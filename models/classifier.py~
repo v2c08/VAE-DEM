@@ -1,0 +1,35 @@
+def predict(latents):
+    from keras.models import load_model, model_from_json
+    import numpy as np
+    from sklearn.preprocessing import MultiLabelBinarizer
+    from itertools import product
+
+    shapes = ['Cube', 'Cone', 'Cylinder', 'Icosphere', 'Torus']
+    colours = ['r', 'g', 'b', 'w']
+    
+    labels = []
+    for c, r in enumerate(product(colours, shapes)):
+        labels.append(r)
+    mlb = MultiLabelBinarizer()
+    mlb.fit(labels)
+    rd = os.path.join(os.path.basename(os.getcwd()),  'weights')
+    print(latents)
+    print(rd)
+    print()
+    latents = np.reshape(latents, (1,len(latents)))
+    
+    json_file = open(os.path.join(rd,'classifier.json'), 'r')
+
+    loaded_model_json = json_file.read()
+
+    json_file.close()
+
+    classifier = model_from_json(loaded_model_json)
+
+    classifier.load_weights(os.path.join(rd,'classifier.hdf5'))
+    
+    out = classifier.predict(latents)
+
+    out = mlb.inverse_transform(out[0])
+    
+    return out
